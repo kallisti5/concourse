@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"code.cloudfoundry.org/lager"
@@ -18,13 +19,17 @@ var ErrFailedToAcquireLock = errors.New("failed to acquire lock")
 func NewChecker(
 	logger lager.Logger,
 	resourceFactory db.ResourceFactory,
+	checkFactory resource.ResourceFactory,
 	secrets creds.Secrets,
+	pool worker.Pool,
 	externalURL string,
 ) *checker {
 	return &checker{
 		logger,
 		resourceFactory,
+		checkFactory,
 		secrets,
+		pool,
 		externalURL,
 	}
 }
@@ -32,7 +37,9 @@ func NewChecker(
 type checker struct {
 	logger          lager.Logger
 	resourceFactory db.ResourceFactory
+	checkFactory    resource.ResourceFactory
 	secrets         creds.Secrets
+	pool            worker.Pool
 	externalURL     string
 }
 
@@ -44,14 +51,20 @@ func (c *checker) Run(ctx context.Context) error {
 		return err
 	}
 
+	waitGroup := new(sync.WaitGroup)
+
 	for _, resourceCheck := range resourceChecks {
-		go c.check(ctx, resourceCheck)
+		go c.check(ctx, resourceCheck, waitGroup)
 	}
+
+	waitGroup.Wait()
 
 	return nil
 }
 
-func (c *checker) check(ctx context.Context, resourceCheck db.ResourceCheck) error {
+func (c *checker) check(ctx context.Context, resourceCheck db.ResourceCheck, waitGroup *sync.WaitGroup) error {
+	waitGroup.Add(1)
+	defer waitGroup.Done()
 
 	if err := c.tryCheck(ctx, resourceCheck); err != nil {
 		if err == ErrFailedToAcquireLock {
@@ -134,9 +147,9 @@ func (c *checker) tryCheck(ctx context.Context, resourceCheck db.ResourceCheck) 
 		return err
 	}
 
-	res, err := c.createResource(logger, ctx, resource, versionedResourceTypes)
+	container, err := c.createContainer(logger, ctx, resource, resourceConfigScope.ResourceConfig(), versionedResourceTypes)
 	if err != nil {
-		logger.Error("failed-to-create-resource-checker", err)
+		logger.Error("failed-to-create-resource-container", err)
 		return err
 	}
 
@@ -145,7 +158,8 @@ func (c *checker) tryCheck(ctx context.Context, resourceCheck db.ResourceCheck) 
 
 	logger.Debug("checking", lager.Data{"from": resourceCheck.FromVersion()})
 
-	versions, err := res.Check(deadline, source, resourceCheck.FromVersion())
+	checkable := c.checkFactory.NewResourceForContainer(container)
+	versions, err := checkable.Check(deadline, source, resourceCheck.FromVersion())
 	if err != nil {
 		if err == context.DeadlineExceeded {
 			return fmt.Errorf("Timed out after %v while checking for new versions", resourceCheck.Timeout())
@@ -154,13 +168,20 @@ func (c *checker) tryCheck(ctx context.Context, resourceCheck db.ResourceCheck) 
 	}
 
 	if err = resourceConfigScope.SaveVersions(versions); err != nil {
+		logger.Error("failed-to-save-versions", err)
 		return err
 	}
 
 	return resourceCheck.Finish()
 }
 
-func (c *checker) createResource(logger lager.Logger, ctx context.Context, dbResource db.Resource, resourceTypes creds.VersionedResourceTypes) (resource.Resource, error) {
+func (c *checker) createContainer(
+	logger lager.Logger,
+	ctx context.Context,
+	dbResource db.Resource,
+	dbResourceConfig db.ResourceConfig,
+	resourceTypes creds.VersionedResourceTypes,
+) (worker.Container, error) {
 
 	metadata := resource.TrackerMetadata{
 		ResourceName: dbResource.Name(),
@@ -188,7 +209,7 @@ func (c *checker) createResource(logger lager.Logger, ctx context.Context, dbRes
 	}
 
 	owner := db.NewResourceConfigCheckSessionContainerOwner(
-		dbResource.ResourceConfig(),
+		dbResourceConfig,
 		db.ContainerOwnerExpiries{
 			GraceTime: 2 * time.Minute,
 			Min:       5 * time.Minute,
@@ -208,12 +229,11 @@ func (c *checker) createResource(logger lager.Logger, ctx context.Context, dbRes
 		worker.NewRandomPlacementStrategy(),
 	)
 	if err != nil {
-		logger.Error("failed-to-choose-a-worker", err)
 		return nil, err
 	}
 
-	container, err := chosenWorker.FindOrCreateContainer(
-		context.Background(),
+	return chosenWorker.FindOrCreateContainer(
+		ctx,
 		logger,
 		worker.NoopImageFetchingDelegate{},
 		owner,
@@ -221,10 +241,4 @@ func (c *checker) createResource(logger lager.Logger, ctx context.Context, dbRes
 		containerSpec,
 		resourceTypes,
 	)
-	if err != nil {
-		logger.Error("failed-to-create-or-find-container", err)
-		return nil, err
-	}
-
-	return resource.NewResource(container), nil
 }
