@@ -1837,7 +1837,7 @@ var _ = DescribeTable("Input resolving",
 		},
 	}),
 
-	FEntry("reconfigure passed constraints for job with missing upstream dependency (simple-c)", Example{
+	Entry("reconfigure passed constraints for job with missing upstream dependency (simple-c)", Example{
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -1856,7 +1856,7 @@ var _ = DescribeTable("Input resolving",
 				{Job: "simple-a", BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
 				{Job: "simple-a", BuildID: 2, Resource: "resource-x", Version: "rxv2", CheckOrder: 2},
 
-				// {Job: "simple-b", BuildID: 3, Resource: "resource-z", Version: "rzv1", CheckOrder: 1},
+				{Job: "simple-b", BuildID: 3, Resource: "resource-z", Version: "rzv1", CheckOrder: 1},
 				{Job: "simple-b", BuildID: 4, Resource: "resource-z", Version: "rzv2", CheckOrder: 2},
 
 				{Job: "simple-c", BuildID: 5, Resource: "resource-w", Version: "rwv3", CheckOrder: 1},

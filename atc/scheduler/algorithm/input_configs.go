@@ -405,7 +405,7 @@ func (im *inputMapper) tryResolve(depth int, db *db.VersionsDB, inputConfigs Inp
 							allVouchedFor = allVouchedFor && candidates[c].VouchedForBy[passedJobID]
 						}
 
-						if allVouchedFor {
+						if allVouchedFor && (unresolvedCandidates[i] == nil || (unresolvedCandidates[i] != nil && unresolvedCandidates[i].ResolveError != nil)) {
 							unresolvedCandidates[i] = newCandidateVersion(output.VersionID)
 						}
 					}
